@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<edmx:Edmx Version="3.0" xmlns:edmx="http://schemas.microsoft.com/ado/2009/11/edmx">
+ <!-- EF Designer content (DO NOT EDIT MANUALLY BELOW HERE) -->
+  <edmx:Designer xmlns="http://schemas.microsoft.com/ado/2009/11/edmx">
+    <!-- Diagram content (shape and connector positions) -->
+    <edmx:Diagrams>
+      <Diagram DiagramId="0488d1d1c03242d3bf4717e44f55346e" Name="Diagram1">
+        <EntityTypeShape EntityType="CloudStorageModel.FileChunk" Width="1.5" PointX="0.75" PointY="4.75" IsExpanded="true" />
+        <EntityTypeShape EntityType="CloudStorageModel.File" Width="1.5" PointX="3" PointY="1" IsExpanded="true" />
+        <EntityTypeShape EntityType="CloudStorageModel.Folder" Width="1.5" PointX="0.75" PointY="1.25" IsExpanded="true" />
+        <EntityTypeShape EntityType="CloudStorageModel.ShareableLink" Width="1.5" PointX="5.25" PointY="1.25" IsExpanded="true" />
+        <AssociationConnector Association="CloudStorageModel.FK_dbo_Files_dbo_Folders_FolderId" ManuallyRouted="false" />
+        <AssociationConnector Association="CloudStorageModel.FK_dbo_ShareableLinks_dbo_Files_FileId" ManuallyRouted="false" />
+        <AssociationConnector Association="CloudStorageModel.FK_dbo_Folders_dbo_Folders_ParentFolderId" ManuallyRouted="false" />
+        <EntityTypeShape EntityType="CloudStorageModel.sysdiagram" Width="1.5" PointX="3.375" PointY="4.75" />
+        <EntityTypeShape EntityType="CloudStorageModel.User" Width="1.5" PointX="5.375" PointY="4.75" />
+      </Diagram>
+    </edmx:Diagrams>
+  </edmx:Designer>
+</edmx:Edmx>

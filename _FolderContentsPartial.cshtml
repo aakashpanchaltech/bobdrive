@@ -1,0 +1,138 @@
+﻿@model BOBDrive.ViewModels.FolderViewModel
+
+<div style="margin-bottom: 20px;">
+    @using (Html.BeginForm("Create", "Folder", FormMethod.Post, new { @class = "form-inline", @id = "createFolderForm" }))
+    {
+        @Html.AntiForgeryToken()
+        @Html.Hidden("parentFolderId", Model.CurrentFolder.Id, new { id = "parentFolderIdForCreate" })
+        <div class="form-group">
+            <input type="text" name="folderName" class="form-control" placeholder="New folder name" required />
+        </div>
+        <button type="submit" class="btn btn-primary">Create Folder</button>
+    }
+</div>
+
+<table class="table table-hover" id="folderContentsTable">
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Type</th>
+            <th>Size</th>
+            <th>Uploaded/Created</th>
+            <th>Actions</th>
+        </tr>
+    </thead>
+    <tbody>
+        @* “Up one level” link if not at root *@
+        @if (Model.ParentOfCurrentFolderId.HasValue || (Model.CurrentFolder.Name != "Root" && Model.CurrentFolder.ParentFolderId.HasValue))
+        {
+            <tr class="folder-row" data-folderid="@Model.ParentOfCurrentFolderId">
+                <td colspan="5">
+                    <i class="glyphicon glyphicon-level-up"></i>
+                    <span class="folder-link" style="cursor:pointer;">.. (Up one level)</span>
+                </td>
+            </tr>
+        }
+
+        @* Subfolders *@
+        @foreach (var folder in Model.SubFolders)
+        {
+            <tr class="folder-row" data-folderid="@folder.Id">
+                <td>
+                    <i class="glyphicon glyphicon-folder-open text-primary"></i>
+                    <span class="folder-link" style="cursor:pointer;">@folder.Name</span>
+                </td>
+                <td>Folder</td>
+                <td>-</td>
+                <td>@folder.CreatedAt.ToString("g")</td>
+                <td><!-- folder-specific actions could go here --></td>
+            </tr>
+        }
+
+        @* Files *@
+        @foreach (var file in Model.Files)
+        {
+            <tr>
+                <td>
+                    <i class="glyphicon glyphicon-file text-secondary"></i> @file.Name
+                </td>
+                <td>@file.ContentType</td>
+                <td>@((file.Size / 1024.0 / 1024.0).ToString("F2")) MB</td>
+                <td>@file.UploadedAt.ToString("g")</td>
+                <td class="file-actions">
+                    @Html.ActionLink("Download", "Download", "File", new { id = file.Id }, new { @class = "btn btn-xs btn-info" })
+                    <button class="btn btn-xs btn-warning share-link-btn" data-fileid="@file.Id" data-filename="@file.Name">Share</button>
+                </td>
+            </tr>
+        }
+
+        @if (!Model.SubFolders.Any() && !Model.Files.Any() && !(Model.ParentOfCurrentFolderId.HasValue || (Model.CurrentFolder.Name != "Root" && Model.CurrentFolder.ParentFolderId.HasValue)))
+        {
+            <tr><td colspan="5" class="text-muted">This folder is empty.</td></tr>
+        }
+    </tbody>
+</table>
+
+<div id="shareModal" class="modal fade" tabindex="-1" role="dialog">
+    <div class="modal-dialog" role="document">
+        <div class="modal-content">
+            <div class="modal-header">
+                <button type="button" class="close" data-dismiss="modal"
+                        aria-label="Close">
+                    <span>&times;</span>
+                </button>
+                <h4 class="modal-title">
+                    Create Shareable Link for
+                    <span id="shareModalFileName"></span>
+                </h4>
+            </div>
+            <div class="modal-body">
+                @* Notice: onsubmit="return false;" prevents default HTML post *@
+                @using (Html.BeginForm(null, null, FormMethod.Post,
+                    new { id = "shareLinkForm", onsubmit = "return false;" }))
+                {
+                    @Html.AntiForgeryToken()
+                    @* Hidden field: file ID *@
+                    <input type="hidden" id="shareFileIdModal" name="FileId" />
+
+                    <div class="form-group">
+                        <label for="sharePasswordModal">Password (optional):</label>
+                        <input type="password"
+                               id="sharePasswordModal"
+                               name="Password"
+                               class="form-control"
+                               placeholder="Leave blank for no password"
+                               autocomplete="off" />
+                    </div>
+                    <div id="shareError" class="text-danger" style="margin-top:10px;"></div>
+
+                    <div id="generatedLinkContainer" style="margin-top:15px; display:none;">
+                        <p>Share this link:</p>
+                        <input type="text"
+                               id="generatedLinkText"
+                               class="form-control"
+                               readonly />
+                        <button type="button"
+                                id="copyLinkBtn"
+                                class="btn btn-default btn-sm"
+                                style="margin-top:5px;">
+                            Copy
+                        </button>
+                    </div>
+                }
+            </div>
+            <div class="modal-footer">
+                <button type="button"
+                        class="btn btn-default"
+                        data-dismiss="modal">
+                    Close
+                </button>
+                <button type="button"
+                        id="createShareLinkBtnModal"
+                        class="btn btn-primary">
+                    Create Link
+                </button>
+            </div>
+        </div>
+    </div>
+</div>

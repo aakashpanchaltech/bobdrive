@@ -1,0 +1,503 @@
+﻿@model BOBDrive.ViewModels.FolderViewModel
+
+@{
+    ViewBag.Title = "My BOB Drive";
+}
+
+<div class="container" style="margin-top:20px;">
+    <h2>@ViewBag.Title</h2>
+    <hr />
+
+    <!-- =================== -->
+    <!-- 1) UPLOAD FORM UI  -->
+    <!-- =================== -->
+    <div style="margin-bottom: 20px;">
+        <form id="chunkUploadForm" class="form-inline" onsubmit="return false;">
+            <input type="hidden" id="uploadFolderId" name="folderId" value="@Model.CurrentFolder.Id" />
+            <div class="form-group">
+                <input type="file" name="file" id="fileInput" class="form-control" required />
+            </div>
+            <button type="button" id="uploadButton" class="btn btn-success">Upload File</button>
+            <button type="button" id="pauseButton" class="btn btn-warning" style="display:none;">Pause</button>
+            <button type="button" id="resumeButton" class="btn btn-info" style="display:none;">Resume</button>
+            <button type="button" id="cancelButton" class="btn btn-danger" style="display:none;">Cancel</button>
+        </form>
+
+        <div id="uploadProgressContainer" style="display:none; margin-top:10px;">
+            <p>Uploading: <span id="uploadFileName"></span></p>
+            <div class="progress">
+                <div id="uploadProgressBar"
+                     class="progress-bar progress-bar-striped active"
+                     role="progressbar"
+                     aria-valuenow="0"
+                     aria-valuemin="0"
+                     aria-valuemax="100"
+                     style="width:0%">
+                    0%
+                </div>
+            </div>
+            <p id="chunkStatus"></p>
+        </div>
+    </div>
+
+    <!-- ============================== -->
+    <!-- 2) FOLDER CONTENTS (AJAX AREA) -->
+    <!-- ============================== -->
+    <div id="folderContentsWrapper">
+        @{ Html.RenderAction("GetFolderContents", "File", new { folderId = Model.CurrentFolder.Id }); }
+    </div>
+</div>
+
+@section scripts {
+    <script type="text/javascript">
+        $(document).ready(function () {
+            // ------------------------------------
+            // UPLOAD STATE & CONFIGURATION
+            // ------------------------------------
+            var CHUNK_SIZE = 10 * 1024 * 1024; // 10 MB chunk size
+            var isUploading = false;
+            var isPaused = false;
+            var cancelRequested = false;
+            var currentChunk = 0;
+            var totalChunks = 0;
+            var fileIdForUpload = null;
+            var folderId = null;
+            var fileObj = null;
+            var totalFileSize = 0;
+            var fileContentType = null;
+
+            // Cache selectors for upload UI
+            var $fileInput = $("#fileInput");
+            var $uploadButton = $("#uploadButton");
+            var $pauseButton = $("#pauseButton");
+            var $resumeButton = $("#resumeButton");
+            var $cancelButton = $("#cancelButton");
+            var $progressContainer = $("#uploadProgressContainer");
+            var $progressBar = $("#uploadProgressBar");
+            var $chunkStatus = $("#chunkStatus");
+            var $uploadFileName = $("#uploadFileName");
+            var $uploadFolderId = $("#uploadFolderId");
+
+            // ----------------------------------------
+            // 1) BIND UPLOAD / PAUSE / RESUME / CANCEL
+            // ----------------------------------------
+            // Note: Bound once on page load—folder navigation never unbinds this.
+
+            $uploadButton.on("click", function () {
+                if ($fileInput[0].files.length === 0) {
+                    alert("Please select a file to upload.");
+                    return;
+                }
+
+                // Initialize upload state
+                fileObj = $fileInput[0].files[0];
+                totalFileSize = fileObj.size;
+                fileContentType = fileObj.type || "application/octet-stream";
+                totalChunks = Math.ceil(totalFileSize / CHUNK_SIZE);
+                fileIdForUpload = generateGuid();
+                folderId = $uploadFolderId.val();
+                currentChunk = 0;
+                cancelRequested = false;
+                isPaused = false;
+                isUploading = true;
+
+                // Update UI
+                $uploadButton.prop("disabled", true);
+                $pauseButton.show().prop("disabled", false);
+                $resumeButton.hide();
+                $cancelButton.show();
+                $progressContainer.show();
+                $uploadFileName.text(fileObj.name);
+                updateProgressBar(0, "Starting upload...");
+
+                // Start sending chunks
+                uploadNextChunk();
+            });
+
+            $pauseButton.on("click", function () {
+                if (isUploading) {
+                    isPaused = true;
+                    isUploading = false;
+                    updateProgressBar(currentChunk / totalChunks * 100, "Upload paused.", false);
+                    $pauseButton.prop("disabled", true);
+                    $resumeButton.show();
+                }
+            });
+
+            $resumeButton.on("click", function () {
+                if (!isUploading && isPaused) {
+                    isPaused = false;
+                    isUploading = true;
+                    $resumeButton.hide();
+                    $pauseButton.show().prop("disabled", false);
+                    updateProgressBar(currentChunk / totalChunks * 100, "Resuming upload...");
+                    uploadNextChunk();
+                }
+            });
+
+            $cancelButton.on("click", function () {
+                if (!fileIdForUpload) {
+                    resetUploadUI();
+                    return;
+                }
+                if (confirm("Cancel this upload?")) {
+                    cancelRequested = true;
+                    isPaused = false;
+                    isUploading = false;
+
+                    // Tell the server to delete any chunks
+                    $.ajax({
+                        url: '@Url.Action("CancelUpload", "File")',
+                        type: "POST",
+                        data: { fileIdForUpload: fileIdForUpload },
+                        success: function (resp) {
+                            // We don't need to inspect resp closely; we just clear UI anyway
+                            resetUploadUI();
+                        },
+                        error: function () {
+                            // Even if the call fails, at least clear UI
+                            resetUploadUI();
+                        }
+                    });
+                }
+            });
+
+            // ----------------------------------------
+            // 2) ACTUALLY SEND EACH CHUNK TO /File/UploadChunk
+            // ----------------------------------------
+            function uploadNextChunk() {
+                if (cancelRequested) return;
+                if (!isUploading) return; // in case we were paused
+
+                // If all chunks were sent, call CompleteUpload
+                if (currentChunk >= totalChunks) {
+                    updateProgressBar(100, "All chunks sent. Finalizing...");
+                    $.ajax({
+                        url: '@Url.Action("CompleteUpload", "File")',
+                        type: "POST",
+                        data: {
+                            fileIdForUpload: fileIdForUpload,
+                            originalFileName: fileObj.name,
+                            folderId: folderId,
+                            totalFileSize: totalFileSize,
+                            fileContentType: fileContentType
+                        },
+                        success: function (response) {
+                            if (response.success) {
+                                updateProgressBar(100, "Upload complete: " + response.fileName, false);
+                                setTimeout(function () {
+                                    loadFolder(folderId);
+                                }, 1500);
+                            } else if (response.errorCode === "DiskFull") {
+                                handleDiskFull();
+                            } else {
+                                updateProgressBar(0, "Error finalizing: " + response.message, true);
+                                finishUploadWithError();
+                            }
+                        },
+                        error: function (xhr, status, err) {
+                            updateProgressBar(0, "Error finalizing: " + err, true);
+                            finishUploadWithError();
+                        }
+                    });
+                    return;
+                }
+
+                // Build the next chunk
+                var start = currentChunk * CHUNK_SIZE;
+                var end = Math.min(start + CHUNK_SIZE, totalFileSize);
+                var chunkBlob = fileObj.slice(start, end);
+
+                var formData = new FormData();
+                formData.append("chunk", chunkBlob, fileObj.name + ".chunk" + currentChunk);
+                formData.append("fileIdForUpload", fileIdForUpload);
+                formData.append("chunkNumber", currentChunk);
+                formData.append("totalChunks", totalChunks);
+                formData.append("originalFileName", fileObj.name);
+                formData.append("folderId", folderId);
+                formData.append("totalFileSize", totalFileSize);
+                formData.append("fileContentType", fileContentType);
+
+                updateProgressBar(
+                    (currentChunk / totalChunks) * 100,
+                    "Uploading chunk " + (currentChunk + 1) + " of " + totalChunks + "..."
+                );
+
+                $.ajax({
+                    url: '@Url.Action("UploadChunk", "File")',
+                    type: "POST",
+                    data: formData,
+                    processData: false,
+                    contentType: false,
+                    success: function (response) {
+                        if (response.success) {
+                            currentChunk++;
+                            if (response.allChunksUploaded) {
+                                uploadNextChunk();
+                            } else {
+                                uploadNextChunk();
+                            }
+                        } else if (response.errorCode === "DiskFull") {
+                            handleDiskFull();
+                        } else {
+                            updateProgressBar(0, "Error uploading chunk: " + response.message, true);
+                            finishUploadWithError();
+                        }
+                    },
+                    error: function (xhr, status, err) {
+                        updateProgressBar(
+                            0,
+                            "Error on chunk " + (currentChunk + 1) + ": " + err,
+                            true
+                        );
+                        finishUploadWithError();
+                    }
+                });
+            }
+
+            function handleDiskFull() {
+                isPaused = true;
+                isUploading = false;
+                updateProgressBar((currentChunk / totalChunks) * 100,
+                                  "Paused: Server disk is full. Waiting for space...", true);
+                $pauseButton.hide();
+                $resumeButton.show().prop("disabled", true);
+                pollForDiskSpace();
+            }
+
+            function pollForDiskSpace() {
+                if (!isPaused) return;
+                setTimeout(function () {
+                    if (!isPaused) return;
+
+                    var probeForm = new FormData();
+                    var emptyBlob = new Blob();
+                    probeForm.append("chunk", emptyBlob, "probe.chunk");
+                    probeForm.append("fileIdForUpload", fileIdForUpload);
+                    probeForm.append("chunkNumber", currentChunk);
+                    probeForm.append("totalChunks", totalChunks);
+                    probeForm.append("originalFileName", fileObj.name);
+                    probeForm.append("folderId", folderId);
+                    probeForm.append("totalFileSize", totalFileSize);
+                    probeForm.append("fileContentType", fileContentType);
+
+                    $.ajax({
+                        url: '@Url.Action("UploadChunk", "File")',
+                        type: "POST",
+                        data: probeForm,
+                        processData: false,
+                        contentType: false,
+                        success: function (resp) {
+                            if (resp.success) {
+                                updateProgressBar(
+                                    (currentChunk / totalChunks) * 100,
+                                    "Disk space freed. Resuming upload..."
+                                );
+                                $resumeButton.prop("disabled", false);
+                            } else if (resp.errorCode === "DiskFull") {
+                                pollForDiskSpace();
+                            } else {
+                                updateProgressBar(0, "Error resuming: " + resp.message, true);
+                                finishUploadWithError();
+                            }
+                        },
+                        error: function () {
+                            pollForDiskSpace();
+                        }
+                    });
+                }, 5000);
+            }
+
+            function finishUploadWithError() {
+                isUploading = false;
+                isPaused = false;
+                $uploadButton.prop("disabled", false);
+                $pauseButton.hide();
+                $resumeButton.hide();
+                $cancelButton.hide();
+            }
+
+            function resetUploadUI() {
+                // Clear all upload‐related state & UI
+                cancelRequested = false;
+                isPaused = false;
+                isUploading = false;
+                currentChunk = 0;
+                totalChunks = 0;
+                fileIdForUpload = null;
+                folderId = null;
+                fileObj = null;
+                totalFileSize = 0;
+                fileContentType = null;
+
+                $uploadButton.prop("disabled", false);
+                $pauseButton.hide();
+                $resumeButton.hide();
+                $cancelButton.hide();
+                $progressContainer.hide();
+                updateProgressBar(0, "");
+            }
+
+            function updateProgressBar(percentage, statusText, isError) {
+                percentage = Math.floor(percentage);
+                $progressBar.css("width", percentage + "%");
+                $progressBar.attr("aria-valuenow", percentage);
+                $progressBar.text(percentage + "%");
+                $chunkStatus.text(statusText || "");
+
+                if (isError) {
+                    $progressBar
+                        .removeClass("progress-bar-success progress-bar-striped active")
+                        .addClass("progress-bar-danger");
+                } else if (percentage >= 100) {
+                    $progressBar
+                        .removeClass("progress-bar-striped active progress-bar-danger")
+                        .addClass("progress-bar-success");
+                } else {
+                    $progressBar
+                        .removeClass("progress-bar-success progress-bar-danger")
+                        .addClass("progress-bar-striped active");
+                }
+            }
+
+            function generateGuid() {
+                var d = new Date().getTime();
+                var uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+                    var r = (d + Math.random() * 16) % 16 | 0;
+                    d = Math.floor(d / 16);
+                    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+                });
+                return uuid;
+            }
+
+            // Warn if the user tries to leave while uploading
+            $(window).on("beforeunload", function () {
+                if (isUploading) {
+                    return "An upload is in progress. Leaving will cancel it.";
+                }
+            });
+
+            // ------------------------------------------------
+            // 3) FOLDER NAVIGATION (always bound, never blocked)
+            // ------------------------------------------------
+            function loadFolder(folderIdToLoad) {
+                $.get(
+                    '@Url.Action("GetFolderContents", "File")',
+                    { folderId: folderIdToLoad },
+                    function (html) {
+                        $("#folderContentsWrapper").html(html);
+                        // Re-bind folder clicks and share-modal after injecting new HTML
+                        bindFolderEvents();
+                        bindShareModal();
+                    }
+                );
+            }
+
+            function bindFolderEvents() {
+                // Always replace the hidden uploadFolderId so future chunks go to the correct folder
+                $("#folderContentsWrapper").off("click", ".folder-row").on("click", ".folder-row", function () {
+                    var newFolderId = $(this).data("folderid");
+                    $("#uploadFolderId").val(newFolderId);
+                    loadFolder(newFolderId);
+                });
+            }
+            bindFolderEvents();
+
+            // -----------------------------
+            //  SHARE‐LINK MODAL BINDINGS
+            // -----------------------------
+            function bindShareModal() {
+                var $shareModal = $("#shareModal");
+                var $sharePassword = $("#sharePasswordModal");
+                var $shareFileIdHidden = $("#shareFileIdModal");
+                var $shareError = $("#shareError");
+                var $generatedLinkContainer = $("#generatedLinkContainer");
+                var $generatedLinkText = $("#generatedLinkText");
+
+                // 1) When someone clicks “Share” in the folder table, we pop up the modal:
+                $("#folderContentsWrapper").off("click", ".share-link-btn")
+                  .on("click", ".share-link-btn", function () {
+                      var fileId = $(this).data("fileid");
+                      var fileName = $(this).data("filename");
+
+                      // Fill in hidden fields & reset any previous error/message
+                      $shareFileIdHidden.val(fileId);
+                      $("#shareModalFileName").text(fileName);
+                      $sharePassword.val("");
+                      $shareError.text("");
+                      $generatedLinkContainer.hide();
+                      $generatedLinkText.val("");
+
+                      // Show the Bootstrap modal
+                      $shareModal.modal("show");
+                  });
+
+                // 2) Clicking “Create Link” (our new button):
+                $("#createShareLinkBtnModal").off("click").on("click", function (e) {
+                    e.preventDefault();
+                    $shareError.text("");
+                    $generatedLinkContainer.hide();
+                    $generatedLinkText.val("");
+
+                    var token = $("#shareLinkForm input[name='__RequestVerificationToken']").val();
+                    var fileId = $shareFileIdHidden.val();
+                    var pwd = $sharePassword.val();
+
+                    // AJAX‐POST to your ShareableLink controller
+                    $.ajax({
+                        url: '@Url.Action("Create", "ShareableLink")',
+                        type: "POST",
+                        data: {
+                            __RequestVerificationToken: token,
+                            FileId: fileId,
+                            Password: pwd
+                        },
+                        success: function (resp) {
+                            if (resp.success) {
+                                // Show the generated link
+                                $generatedLinkText.val(resp.link);
+                                $generatedLinkContainer.show();
+                            } else {
+                                // Show server‐side error (e.g. “Invalid FileId” or “Missing password”)
+                                $shareError.text(resp.message || "Error creating link.");
+                                $generatedLinkContainer.hide();
+                            }
+                        },
+                        error: function (xhr, status, errorThrown) {
+                            $shareError.text("An unexpected error occurred: " + errorThrown);
+                            $generatedLinkContainer.hide();
+                        }
+                    });
+                });
+
+                // 3) “Copy” button in the modal
+                $("#copyLinkBtn").off("click").on("click", function () {
+                    var copyText = document.getElementById("generatedLinkText");
+                    copyText.select();
+                    copyText.setSelectionRange(0, 99999); // mobile devices
+
+                    try {
+                        var successful = document.execCommand("copy");
+                        var msg = successful ? "Copied!" : "Failed to copy";
+                        var tempMsg = $("<span/>").text(msg).css({
+                            position: "absolute",
+                            left: "50%",
+                            top: "50%",
+                            transform: "translate(-50%,-50%)",
+                            padding: "10px",
+                            background: "#333",
+                            color: "#fff",
+                            borderRadius: "5px",
+                            zIndex: "9999"
+                        });
+                        $("body").append(tempMsg);
+                        setTimeout(function () { tempMsg.remove(); }, 1500);
+                    } catch (err) {
+                        alert("Oops, unable to copy");
+                    }
+                });
+            }
+            bindShareModal();
+        });
+    </script>
+}
