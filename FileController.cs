@@ -219,16 +219,16 @@ namespace BOBDrive.Controllers
                     }
                 }
 
-                // 3) Delete the temp chunk folder
-                string chunkDirectory = Path.Combine(_tempChunkPath, fileIdForUpload);
-                if (Directory.Exists(chunkDirectory))
-                    Directory.Delete(chunkDirectory, true);
-
-                // 4) Remove chunk records and mark file as no longer processing
+                // 3) Remove chunk records and mark file as no longer processing
                 db.FileChunks.RemoveRange(chunks);
                 newFile.IsProcessing = false;
                 db.Entry(newFile).State = EntityState.Modified;
                 await db.SaveChangesAsync();
+
+                // 4) Delete the temp chunk folder (only after all operations succeed)
+                string chunkDirectory = Path.Combine(_tempChunkPath, fileIdForUpload);
+                if (Directory.Exists(chunkDirectory))
+                    Directory.Delete(chunkDirectory, true);
 
                 return Json(new
                 {
